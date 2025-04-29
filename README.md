@@ -1,2 +1,2 @@
 # middleware-app
-A Demo middleware application
+A middleware Demo application
