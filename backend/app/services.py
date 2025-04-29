@@ -1,6 +1,11 @@
+import os
 import httpx
 
-EXTERNAL_URL = "https://httpbin.org/post"
+from dotenv import load_dotenv
+
+load_dotenv()
+
+EXTERNAL_URL = os.getenv("EXTERNAL_URL")
 
 
 def forward_data(data: dict):

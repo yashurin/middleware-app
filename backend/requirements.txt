@@ -3,3 +3,4 @@ uvicorn[standard]
 sqlalchemy
 pymysql
 httpx
+python-dotenv
