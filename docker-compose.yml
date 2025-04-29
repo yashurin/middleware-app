@@ -7,14 +7,7 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      - mariadb
       - apicurio
-    environment:
-      - DB_HOST=mariadb
-      - DB_PORT=3306
-      - DB_USER=root
-      - DB_PASSWORD=example
-      - DB_NAME=middleware_db
     volumes:
       - ./backend:/app
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
@@ -29,20 +22,8 @@ services:
     working_dir: /app
     command: [ "npm", "start" ]
 
-  mariadb:
-    image: mariadb:11
-    environment:
-      MYSQL_ROOT_PASSWORD: example
-      MYSQL_DATABASE: middleware_db
-    ports:
-      - "3306:3306"
-    volumes:
-      - mariadb_data:/var/lib/mysql
-
   apicurio:
     image: quay.io/apicurio/apicurio-registry-mem:2.5.10.Final
     ports:
       - "8081:8080"
 
-volumes:
-  mariadb_data:
