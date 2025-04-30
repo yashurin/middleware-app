@@ -1,13 +1,8 @@
-import os
 import httpx
-
-from dotenv import load_dotenv
-
-load_dotenv()
-
-EXTERNAL_URL = os.getenv("EXTERNAL_URL")
+from app.config import EXTERNAL_URL
 
 
-def forward_data(data: dict):
-    response = httpx.post(EXTERNAL_URL, json=data)
-    response.raise_for_status()
+async def forward_data(data: dict):
+    async with httpx.AsyncClient() as client:
+        response = await client.post(EXTERNAL_URL, json=data)
+        response.raise_for_status()
