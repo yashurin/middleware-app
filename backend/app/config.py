@@ -5,8 +5,8 @@ import json
 
 
 class Settings(BaseSettings):
-    # External URL
-    EXTERNAL_URL: str = "http://localhost:8000"
+    # External URLs
+    CONTACT_MESSAGE_URL: str = "http://localhost:8000"
 
     # Database settings
     DB_HOST: str = "localhost"
