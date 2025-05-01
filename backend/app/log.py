@@ -1,5 +1,5 @@
-import logging
 import json
+import logging
 from datetime import datetime
 
 
@@ -15,8 +15,24 @@ class JSONFormatter(logging.Formatter):
         }
         # Add all extra attributes
         for key, value in record.__dict__.items():
-            if key not in ["args", "exc_info", "exc_text", "msg", "message", "levelname", "module", "created", "msecs",
-                           "relativeCreated", "levelno", "pathname", "filename", "funcName", "lineno", "asctime"]:
+            if key not in [
+                "args",
+                "exc_info",
+                "exc_text",
+                "msg",
+                "message",
+                "levelname",
+                "module",
+                "created",
+                "msecs",
+                "relativeCreated",
+                "levelno",
+                "pathname",
+                "filename",
+                "funcName",
+                "lineno",
+                "asctime",
+            ]:
                 log_record[key] = value
 
         if record.exc_info:

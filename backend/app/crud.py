@@ -1,7 +1,8 @@
+from app.models import DataModel
+from sqlalchemy import delete as sqlalchemy_delete
+from sqlalchemy import update as sqlalchemy_update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import update as sqlalchemy_update, delete as sqlalchemy_delete
-from app.models import DataModel
 
 
 class BaseRepository:
@@ -26,9 +27,7 @@ class BaseRepository:
         return result.scalars().first()
 
     async def get_all(self, limit: int = 10, offset: int = 0):
-        result = await self.db.execute(
-            select(self.model).offset(offset).limit(limit)
-        )
+        result = await self.db.execute(select(self.model).offset(offset).limit(limit))
         return result.scalars().all()
 
     async def update(self, item_id: int, update_data: dict):
