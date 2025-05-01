@@ -1,11 +1,11 @@
 import time
-import json
-from fastapi import FastAPI, HTTPException, Depends, status, Path, Body
+from fastapi import FastAPI, HTTPException, Depends, status, Path, Body, Query
 import httpx
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import DataModel
+from app.models import DataModel, record_to_dict
+from app.crud import DataRepository
 from app.database import get_db
 from app.database import engine, Base
 from app.schemas import SchemaRequest
@@ -87,19 +87,18 @@ async def receive_data(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Data transformation failed: {e}")
 
-    db_item = DataModel(
-        schema_name=schema_name,
-        raw_data=payload,
-        transformed_data=transformed_data,
-        forwarded_to=schema_config["destination_url"]
-    )
-
+    repo = DataRepository(db)
     try:
-        db.add(db_item)
-        await db.commit()
-        await db.refresh(db_item, ["id"])
+        db_item = await repo.create(
+            {
+                "schema_name": schema_name,
+                "raw_data": payload,
+                "transformed_data": transformed_data,
+                "forwarded_to": schema_config["destination_url"]
+            },
+            refresh_fields=["id"]
+        )
     except Exception as e:
-        await db.rollback()
         raise HTTPException(status_code=500, detail=f"Database error: {e}")
 
     try:
@@ -108,6 +107,22 @@ async def receive_data(
         raise HTTPException(status_code=502, detail=f"Failed to forward data: {e}")
 
     return {"message": "Data received, validated, stored, and forwarded successfully."}
+
+
+@app.get("/records")
+async def get_records_by_schema(
+    schema_name: str = Query(..., description="Schema name to filter records by"),
+    limit: int = Query(10, ge=1, le=100, description="Max records to return (1–100)"),
+    offset: int = Query(0, ge=0, description="Number of records to skip"),
+    db: AsyncSession = Depends(get_db)
+):
+    repo = DataRepository(db)
+    try:
+        records = await repo.get_many_by_schema(schema_name, limit, offset)
+
+        return [record_to_dict(record) for record in records]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {e}")
 
 
 @app.get("/health", status_code=status.HTTP_200_OK)
