@@ -1,9 +1,8 @@
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker, declarative_base
 from app.config import get_settings
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import declarative_base, sessionmaker
 
 settings = get_settings()
-
 
 
 engine = create_async_engine(
@@ -22,7 +21,7 @@ engine = create_async_engine(
         "charset": "utf8mb4",
         "use_unicode": True,
         # Remove autocommit as it's handled by SQLAlchemy
-    }
+    },
 )
 
 

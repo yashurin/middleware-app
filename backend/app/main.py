@@ -1,21 +1,32 @@
+import csv
 import time
-from fastapi import FastAPI, HTTPException, Depends, status, Path, Body, Query
-import httpx
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
+import xml.etree.ElementTree as ET
+from io import StringIO
 
-from app.models import DataModel, record_to_dict
+import httpx
+from app.apicurio import get_schema_by_name, register_schema
+from app.config import get_settings
 from app.crud import DataRepository
-from app.database import get_db
-from app.database import engine, Base
+from app.database import Base, engine, get_db
+from app.log import logger
+from app.models import DataModel, record_to_dict
+from app.schema_registry import SCHEMA_REGISTRY
 from app.schemas import SchemaRequest
 from app.services import forward_data
-from app.log import logger
-from app.apicurio import get_schema_by_name, register_schema
-from jsonschema import validate, ValidationError
-from app.schema_registry import SCHEMA_REGISTRY
-
-from app.config import get_settings
+from fastapi import (
+    Body,
+    Depends,
+    FastAPI,
+    File,
+    HTTPException,
+    Path,
+    Query,
+    UploadFile,
+    status,
+)
+from jsonschema import ValidationError, validate
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 settings = get_settings()
 
@@ -31,15 +42,14 @@ def main_endpoint():
 @app.post("/schemas")
 async def add_schema(schema_req: SchemaRequest):
     if schema_req.name not in settings.SCHEMAS:
-        raise HTTPException(status_code=400, detail=f"Schema name '{schema_req.name}' is not allowed.")
+        raise HTTPException(
+            status_code=400, detail=f"Schema name '{schema_req.name}' is not allowed."
+        )
 
     if schema_req.schema_type.upper() != "JSON":
         raise HTTPException(status_code=400, detail="Only JSON schemas are supported.")
     try:
-        result = await register_schema(
-            name=schema_req.name,
-            schema=schema_req.schema
-        )
+        result = await register_schema(name=schema_req.name, schema=schema_req.schema)
         return {"message": "Schema registered", "response": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -53,7 +63,9 @@ async def fetch_schema(name: str):
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 404:
             raise HTTPException(status_code=404, detail=f"Schema '{name}' not found.")
-        raise HTTPException(status_code=500, detail="Error fetching schema from Apicurio.")
+        raise HTTPException(
+            status_code=500, detail="Error fetching schema from Apicurio."
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -62,23 +74,29 @@ async def fetch_schema(name: str):
 async def receive_data(
     schema_name: str = Path(..., description="Name of the schema to validate against"),
     payload: dict = Body(..., description="Raw JSON payload"),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     try:
         schema = await get_schema_by_name(schema_name)
         validate(instance=payload, schema=schema)
     except httpx.HTTPStatusError as http_err:
         if http_err.response.status_code == 404:
-            raise HTTPException(status_code=404, detail=f"Schema '{schema_name}' not found")
+            raise HTTPException(
+                status_code=404, detail=f"Schema '{schema_name}' not found"
+            )
         raise HTTPException(status_code=502, detail=f"Schema fetch error: {http_err}")
     except ValidationError as ve:
-        raise HTTPException(status_code=422, detail=f"Schema validation error: {ve.message}")
+        raise HTTPException(
+            status_code=422, detail=f"Schema validation error: {ve.message}"
+        )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Unexpected schema error: {e}")
 
     schema_config = SCHEMA_REGISTRY.get(schema_name)
     if not schema_config:
-        raise HTTPException(status_code=400, detail=f"No config found for schema '{schema_name}'")
+        raise HTTPException(
+            status_code=400, detail=f"No config found for schema '{schema_name}'"
+        )
 
     try:
         logger.info(payload)
@@ -94,9 +112,9 @@ async def receive_data(
                 "schema_name": schema_name,
                 "raw_data": payload,
                 "transformed_data": transformed_data,
-                "forwarded_to": schema_config["destination_url"]
+                "forwarded_to": schema_config["destination_url"],
             },
-            refresh_fields=["id"]
+            refresh_fields=["id"],
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database error: {e}")
@@ -109,12 +127,79 @@ async def receive_data(
     return {"message": "Data received, validated, stored, and forwarded successfully."}
 
 
+@app.post("/upload/{schema_name}")
+async def upload_file(
+    schema_name: str = Path(..., description="Name of the schema to validate against"),
+    file: UploadFile = File(..., description="CSV or XML file"),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        schema = await get_schema_by_name(schema_name)
+    except httpx.HTTPStatusError as http_err:
+        if http_err.response.status_code == 404:
+            raise HTTPException(
+                status_code=404, detail=f"Schema '{schema_name}' not found"
+            )
+        raise HTTPException(status_code=502, detail=f"Schema fetch error: {http_err}")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Unexpected schema error: {e}")
+
+    schema_config = SCHEMA_REGISTRY.get(schema_name)
+
+    if not schema_config:
+        raise HTTPException(
+            status_code=400, detail=f"No config found for schema '{schema_name}'"
+        )
+
+    contents = await file.read()
+    try:
+        if file.filename.endswith(".csv"):
+            decoded = contents.decode("utf-8")
+            reader = csv.DictReader(StringIO(decoded))
+            records = list(reader)
+        elif file.filename.endswith(".xml"):
+            logger.info("XML parsing to be implemented later")
+            records = []
+
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported file type")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse file: {e}")
+
+    repo = DataRepository(db)
+    results = []
+
+    for record in records:
+        try:
+            validate(instance=record, schema=schema)
+            transformed_data = schema_config["transform"](record)
+            db_item = await repo.create(
+                {
+                    "schema_name": schema_name,
+                    "raw_data": record,
+                    "transformed_data": transformed_data,
+                    "forwarded_to": schema_config["destination_url"],
+                },
+                refresh_fields=["id"],
+            )
+            await forward_data(transformed_data, schema_config["destination_url"])
+            results.append({"id": db_item.id, "status": "success"})
+        except ValidationError as ve:
+            results.append(
+                {"record": record, "status": "validation error", "detail": ve.message}
+            )
+        except Exception as e:
+            results.append({"record": record, "status": "error", "detail": str(e)})
+
+    return {"message": "File processed", "results": results}
+
+
 @app.get("/records")
 async def get_records_by_schema(
     schema_name: str = Query(..., description="Schema name to filter records by"),
     limit: int = Query(10, ge=1, le=100, description="Max records to return (1–100)"),
     offset: int = Query(0, ge=0, description="Number of records to skip"),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     repo = DataRepository(db)
     try:

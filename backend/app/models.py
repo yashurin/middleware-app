@@ -1,5 +1,5 @@
-from sqlalchemy import Column, Integer, String, JSON, DateTime, func
 from app.database import Base
+from sqlalchemy import JSON, Column, DateTime, Integer, String, func
 
 
 class DataModel(Base):

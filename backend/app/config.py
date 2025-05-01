@@ -1,7 +1,8 @@
-from typing import List
-from pydantic_settings import BaseSettings
-from functools import lru_cache
 import json
+from functools import lru_cache
+from typing import List
+
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
