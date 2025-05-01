@@ -1,11 +1,9 @@
-import os
 import time
 import json
 from fastapi import FastAPI, HTTPException, Depends, status
 import httpx
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
-
 
 from app.models import DataModel
 from app.database import get_db
@@ -16,8 +14,10 @@ from app.log import logger
 from app.apicurio import get_schema_by_name, register_schema
 from jsonschema import validate, ValidationError
 
+from app.config import get_settings
 
-SCHEMAS = os.getenv("SCHEMAS")
+settings = get_settings()
+
 
 app = FastAPI()
 
@@ -29,7 +29,7 @@ def main_endpoint():
 
 @app.post("/schemas")
 async def add_schema(schema_req: SchemaRequest):
-    schemas = json.loads(SCHEMAS)
+    schemas = json.loads(settings.SCHEMAS)
     if schema_req.name not in schemas:
         raise HTTPException(status_code=400, detail=f"Schema name '{schema_req.name}' is not allowed.")
 

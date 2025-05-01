@@ -1,10 +1,12 @@
 import httpx
 from async_lru import alru_cache
-from app.config import APICURIO_URL
+from app.config import get_settings
+
+settings = get_settings()
 
 
 async def register_schema(name: str, schema: dict):
-    url = f"{APICURIO_URL}/groups/default/artifacts"
+    url = f"{settings.APICURIO_URL}/groups/default/artifacts"
     headers = {
         "X-Registry-ArtifactId": name,
         "Content-Type": "application/json"
@@ -18,7 +20,7 @@ async def register_schema(name: str, schema: dict):
 
 @alru_cache(maxsize=32)
 async def get_schema_by_name(name: str):
-    url = f"{APICURIO_URL}/groups/default/artifacts/{name}"
+    url = f"{settings.APICURIO_URL}/groups/default/artifacts/{name}"
     headers = {
         "Accept": "application/json"
     }
