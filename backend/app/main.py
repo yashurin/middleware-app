@@ -1,60 +1,26 @@
 import os
+import time
 import json
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, status
 import httpx
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
-#from app.database import get_db, engine, Base
-from sqlalchemy.orm import sessionmaker
+
+
 from app.models import DataModel
+from app.database import get_db
+from app.database import engine, Base
 from app.schemas import InputData, SchemaRequest
 from app.services import forward_data
 from app.log import logger
 from app.apicurio import get_schema_by_name, register_schema
 from jsonschema import validate, ValidationError
 
-from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy.orm import declarative_base
-
-import os
-from dotenv import load_dotenv
-
-load_dotenv()
-DB_HOST = os.getenv("DB_HOST")
-DB_PORT = os.getenv("DB_PORT")
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_NAME = os.getenv("DB_NAME")
-
-DATABASE_URL = f"mysql+asyncmy://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-
-#Base = declarative_base()
-
-# Create your async SQLAlchemy engine
-engine = create_async_engine(DATABASE_URL, echo=True, future=True) # future was added
-#engine = create_async_engine(SQLALCHEMY_DATABASE_URL, echo=True, future=True)
-SessionLocal = sessionmaker(
-    bind=engine, class_=AsyncSession, expire_on_commit=False
-)
-
-Base = declarative_base()
-
-async def get_db():
-    async with SessionLocal() as session:
-        yield session
-
-# from dotenv import load_dotenv
-#
-# load_dotenv()
 
 SCHEMAS = os.getenv("SCHEMAS")
 
 app = FastAPI()
 
-#Base.metadata.create_all(bind=engine)
-
-async def init_models():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
 
 @app.get("/")
 def main_endpoint():
@@ -108,14 +74,12 @@ async def receive_data(payload: InputData, db: AsyncSession = Depends(get_db)):
     try:
         db.add(db_item)
         await db.commit()
-        await db.refresh(db_item)
-        logger.info('AFTER THE DB REFRESH')
+        await db.refresh(db_item, ["id"])  # selective refresh for better performance
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail=f"Database error: {e}")
 
     try:
-        logger.info('BEFORE SENDING A REQUEST')
         await forward_data(transformed_data)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to forward data: {e}")
@@ -123,30 +87,16 @@ async def receive_data(payload: InputData, db: AsyncSession = Depends(get_db)):
     return {"message": "Data received, validated, stored, and forwarded successfully."}
 
 
-@app.on_event("startup")
-async def on_startup():
-    await init_models()
+@app.get("/health", status_code=status.HTTP_200_OK)
+async def health_check(db: AsyncSession = Depends(get_db)):
+    # Execute a simple query to verify the connection
+    start = time.time()
+    result = await db.execute(text("SELECT 1"))
+    end = time.time()
+    return {"status": "healthy", "db_response_time": f"{(end-start):.4f}s"}
 
-# @app.post("/data")
-# def receive_data(payload: InputData, db: Session = Depends(get_db)):
-#     try:
-#         schema = get_schema_by_name("contact-message-schema")
-#         validate(instance=payload.dict(), schema=schema)
-#     except ValidationError as ve:
-#         raise HTTPException(status_code=422, detail=f"Schema validation error: {ve.message}")
-#     except Exception as e:
-#         raise HTTPException(status_code=502, detail=f"Failed to load schema: {e}")
-#
-#     transformed_data = payload.dict()
-#
-#     db_item = DataModel(**transformed_data)
-#     db.add(db_item)
-#     db.commit()
-#     db.refresh(db_item)
-#
-#     try:
-#         forward_data(transformed_data)
-#     except Exception as e:
-#         raise HTTPException(status_code=502, detail=f"Failed to forward data: {e}")
-#
-#     return {"message": "Data received, validated, stored, and forwarded successfully."}
+
+@app.on_event("startup")
+async def create_tables():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
