@@ -133,6 +133,7 @@ async def upload_file(
     file: UploadFile = File(..., description="CSV or XML file"),
     db: AsyncSession = Depends(get_db),
 ):
+    logger.info("IN the UPLOAD ENDPOINT")
     try:
         schema = await get_schema_by_name(schema_name)
     except httpx.HTTPStatusError as http_err:
