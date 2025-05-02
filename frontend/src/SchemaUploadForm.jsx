@@ -32,23 +32,26 @@ const SchemaUploadForm = () => {
 
     try {
       setLoading(true);
-      const response = await axios.post(`/upload/${selectedSchema}`, formData, {
+      const response = await axios.post(`http://localhost:8000/upload/${selectedSchema}`, formData, {
         headers: {
           'Content-Type': 'multipart/form-data'
         }
       });
       setStatusMessage(`Success: ${response.data.message || 'File uploaded successfully.'}`);
     } catch (error) {
-      const message = error.response?.data?.detail || 'An error occurred during upload.';
-      setStatusMessage(`Error: ${message}`);
+        const message =
+        error.response?.data?.detail ||
+        error.message ||
+        "An unknown error occurred.";
+        setStatusMessage(`Error: ${message}`);
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="max-w-md mx-auto mt-10 p-4 shadow-lg rounded-lg bg-white">
-      <h2 className="text-xl font-semibold mb-4">Upload File with Schema</h2>
+    <div style={{ padding: "1rem", border: "1px solid #ccc", marginTop: "1rem" }}>
+      <h3>Upload File with Schema</h3>
 
       <div className="mb-4">
         <label className="block mb-1 font-medium">Select Schema:</label>

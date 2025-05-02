@@ -1,7 +1,4 @@
-import csv
 import time
-import xml.etree.ElementTree as ET
-from io import StringIO
 
 import httpx
 from app.apicurio import get_schema_by_name, register_schema
@@ -12,7 +9,7 @@ from app.log import logger
 from app.models import DataModel, record_to_dict
 from app.schema_registry import SCHEMA_REGISTRY
 from app.schemas import SchemaRequest
-from app.services import forward_data
+from app.services import forward_data, process_file
 from fastapi import (
     Body,
     Depends,
@@ -24,6 +21,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.middleware.cors import CORSMiddleware
 from jsonschema import ValidationError, validate
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,6 +30,14 @@ settings = get_settings()
 
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # You can narrow this for production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/")
@@ -133,7 +139,6 @@ async def upload_file(
     file: UploadFile = File(..., description="CSV or XML file"),
     db: AsyncSession = Depends(get_db),
 ):
-    logger.info("IN the UPLOAD ENDPOINT")
     try:
         schema = await get_schema_by_name(schema_name)
     except httpx.HTTPStatusError as http_err:
@@ -154,21 +159,16 @@ async def upload_file(
 
     contents = await file.read()
     try:
-        if file.filename.endswith(".csv"):
-            decoded = contents.decode("utf-8")
-            reader = csv.DictReader(StringIO(decoded))
-            records = list(reader)
-        elif file.filename.endswith(".xml"):
-            logger.info("XML parsing to be implemented later")
-            records = []
-
-        else:
-            raise HTTPException(status_code=400, detail="Unsupported file type")
+        records = await process_file(file.filename, contents)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to parse file: {e}")
 
     repo = DataRepository(db)
     results = []
+    validation_errors = []
+    errors = []
 
     for record in records:
         try:
@@ -186,13 +186,30 @@ async def upload_file(
             await forward_data(transformed_data, schema_config["destination_url"])
             results.append({"id": db_item.id, "status": "success"})
         except ValidationError as ve:
-            results.append(
+            validation_errors.append(
                 {"record": record, "status": "validation error", "detail": ve.message}
             )
         except Exception as e:
-            results.append({"record": record, "status": "error", "detail": str(e)})
+            errors.append({"record": record, "status": "error", "detail": str(e)})
 
-    return {"message": "File processed", "results": results}
+    num_validation_errors = len(validation_errors)
+    if num_validation_errors != 0:
+        logger.warning(f"Validation errors: {validation_errors}")
+    num_errors = len(errors)
+    if num_errors != 0:
+        logger.warning(f"Other errors: {errors}")
+    if len(results) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File records could not be processed. Validation errors: {num_validation_errors}. Other errors: {num_errors}",
+        )
+    if num_validation_errors != 0 or num_errors != 0:
+        return {
+            "message": f"Some file records could not be processed. Validation errors: {num_validation_errors}. Other errors: {num_errors}",
+            "results": results,
+        }
+
+    return {"message": "All file records successfully processed", "results": results}
 
 
 @app.get("/records")

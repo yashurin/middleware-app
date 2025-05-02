@@ -17,6 +17,7 @@ services:
       context: ./frontend
     volumes:
       - ./frontend:/app
+      - /app/node_modules  # Prevent host from overwriting container's node_modules
     ports:
       - "3000:3000"
     working_dir: /app

@@ -8,4 +8,7 @@ python-dotenv
 jsonschema
 async-lru
 pydantic-settings
-python-multipart  # Required for handling file uploads
+python-multipart  # Required for form/file uploads in FastAPI
+pandas
+openpyxl  # For Excel .xlsx files
+xlrd  # For Excel .xls files
