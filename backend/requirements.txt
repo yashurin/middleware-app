@@ -1,7 +1,6 @@
 fastapi
 uvicorn[standard]
 sqlalchemy
-pymysql
 aiomysql
 httpx
 python-dotenv
@@ -10,5 +9,3 @@ async-lru
 pydantic-settings
 python-multipart  # Required for form/file uploads in FastAPI
 pandas
-openpyxl  # For Excel .xlsx files
-xlrd  # For Excel .xls files
