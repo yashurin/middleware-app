@@ -12,6 +12,15 @@ services:
       - ./backend:/app
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
+  backend2:  # TO Simulate data fetching from an external API
+    build: ./backend2
+    container_name: fastapi-backend2
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./backend2:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+
   frontend:
     build:
       context: ./frontend
