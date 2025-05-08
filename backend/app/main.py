@@ -1,15 +1,6 @@
 import time
 
 import httpx
-from app.apicurio import get_schema_by_name, register_schema
-from app.config import get_settings
-from app.crud import DataRepository
-from app.database import Base, engine, get_db
-from app.log import logger
-from app.models import DataModel, record_to_dict
-from app.schema_registry import SCHEMA_REGISTRY
-from app.schemas import SchemaRequest
-from app.services import forward_data, process_file
 from fastapi import (
     Body,
     Depends,
@@ -26,6 +17,21 @@ from jsonschema import ValidationError, validate
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.apicurio import get_schema_by_name, register_schema
+from app.config import get_settings
+from app.crud import DataRepository
+from app.database import Base, engine, get_db
+from app.log import logger
+from app.models import DataModel, record_to_dict
+from app.schema_registry import SCHEMA_REGISTRY
+from app.schemas import SchemaRequest
+from app.services import (
+    fetch_data_from_api,
+    forward_data,
+    process_file,
+    process_records,
+)
+
 settings = get_settings()
 
 
@@ -40,12 +46,7 @@ app.add_middleware(
 )
 
 
-@app.get("/")
-def main_endpoint():
-    return {"message": "Hello World!"}
-
-
-@app.post("/schemas")
+@app.post("/schemas", tags=["Schemas"])
 async def add_schema(schema_req: SchemaRequest):
     if schema_req.name not in settings.SCHEMAS:
         raise HTTPException(
@@ -61,7 +62,7 @@ async def add_schema(schema_req: SchemaRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/schemas/{name}")
+@app.get("/schemas/{name}", tags=["Schemas"])
 async def fetch_schema(name: str):
     try:
         schema = await get_schema_by_name(name)
@@ -76,7 +77,84 @@ async def fetch_schema(name: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/data/{schema_name}")
+@app.post("/fetch/{schema_name}", tags=["Data"])
+async def fetch_data(
+    schema_name: str = Path(..., description="Name of the schema to validate against"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Fetch data from an external API, validate against the specified schema,
+    transform, save to database and forward to destination.
+    """
+    # Schema fetching and validation
+    try:
+        schema_dict = await get_schema_by_name(schema_name)
+    except httpx.HTTPStatusError as http_err:
+        if http_err.response.status_code == 404:
+            raise HTTPException(
+                status_code=404, detail=f"Schema '{schema_name}' not found"
+            )
+        raise HTTPException(status_code=502, detail=f"Schema fetch error: {http_err}")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Unexpected schema error: {e}")
+
+    schema_config = SCHEMA_REGISTRY.get(schema_name)
+    if not schema_config:
+        raise HTTPException(
+            status_code=400, detail=f"No config found for schema '{schema_name}'"
+        )
+
+    # Fetch data from external API
+    try:
+        source_url = schema_config.get("source_url")
+        if not source_url:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Source URL not configured for schema '{schema_name}'",
+            )
+        records = await fetch_data_from_api(
+            source_url, params=None
+        )  # TO DO: Allow to pass parameters
+    except httpx.HTTPStatusError as http_err:
+        raise HTTPException(
+            status_code=502,
+            detail=f"API fetch error: {http_err.response.status_code} - {http_err}",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch data: {e}")
+
+    if not records or len(records) == 0:
+        return {"message": "No records found in API response", "results": []}
+
+    # Process the records
+    repo = DataRepository(db)
+    processed = await process_records(records, schema_dict, schema_config, repo)
+
+    results = processed["results"]
+    validation_errors = processed["validation_errors"]
+    errors = processed["errors"]
+
+    num_validation_errors = len(validation_errors)
+    if num_validation_errors != 0:
+        logger.warning(f"Validation errors: {validation_errors}")
+    num_errors = len(errors)
+    if num_errors != 0:
+        logger.warning(f"Other errors: {errors}")
+    if len(results) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"API records could not be processed. Validation errors: {num_validation_errors}. Other errors: {num_errors}",
+        )
+    if num_validation_errors != 0 or num_errors != 0:
+        return {
+            "message": f"Some API records could not be processed. Validation errors: {num_validation_errors}. Other errors: {num_errors}",
+            "results": results,
+        }
+
+    return {"message": "All API records successfully processed", "results": results}
+
+
+@app.post("/data/{schema_name}", tags=["Data"])
 async def receive_data(
     schema_name: str = Path(..., description="Name of the schema to validate against"),
     payload: dict = Body(..., description="Raw JSON payload"),
@@ -105,9 +183,7 @@ async def receive_data(
         )
 
     try:
-        logger.info(payload)
         transformed_data = schema_config["transform"](payload)
-        logger.info(transformed_data)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Data transformation failed: {e}")
 
@@ -133,14 +209,14 @@ async def receive_data(
     return {"message": "Data received, validated, stored, and forwarded successfully."}
 
 
-@app.post("/upload/{schema_name}")
+@app.post("/upload/{schema_name}", tags=["Data"])
 async def upload_file(
     schema_name: str = Path(..., description="Name of the schema to validate against"),
     file: UploadFile = File(..., description="CSV or XML file"),
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        schema = await get_schema_by_name(schema_name)
+        schema_dict = await get_schema_by_name(schema_name)
     except httpx.HTTPStatusError as http_err:
         if http_err.response.status_code == 404:
             raise HTTPException(
@@ -166,31 +242,12 @@ async def upload_file(
         raise HTTPException(status_code=400, detail=f"Failed to parse file: {e}")
 
     repo = DataRepository(db)
-    results = []
-    validation_errors = []
-    errors = []
 
-    for record in records:
-        try:
-            validate(instance=record, schema=schema)
-            transformed_data = schema_config["transform"](record)
-            db_item = await repo.create(
-                {
-                    "schema_name": schema_name,
-                    "raw_data": record,
-                    "transformed_data": transformed_data,
-                    "forwarded_to": schema_config["destination_url"],
-                },
-                refresh_fields=["id"],
-            )
-            await forward_data(transformed_data, schema_config["destination_url"])
-            results.append({"id": db_item.id, "status": "success"})
-        except ValidationError as ve:
-            validation_errors.append(
-                {"record": record, "status": "validation error", "detail": ve.message}
-            )
-        except Exception as e:
-            errors.append({"record": record, "status": "error", "detail": str(e)})
+    processed = await process_records(records, schema_dict, schema_config, repo)
+
+    results = processed["results"]
+    validation_errors = processed["validation_errors"]
+    errors = processed["errors"]
 
     num_validation_errors = len(validation_errors)
     if num_validation_errors != 0:
@@ -212,7 +269,7 @@ async def upload_file(
     return {"message": "All file records successfully processed", "results": results}
 
 
-@app.get("/records")
+@app.get("/records", tags=["DB"])
 async def get_records_by_schema(
     schema_name: str = Query(..., description="Schema name to filter records by"),
     limit: int = Query(10, ge=1, le=100, description="Max records to return (1–100)"),
@@ -228,7 +285,7 @@ async def get_records_by_schema(
         raise HTTPException(status_code=500, detail=f"Database error: {e}")
 
 
-@app.get("/health", status_code=status.HTTP_200_OK)
+@app.get("/health", status_code=status.HTTP_200_OK, tags=["Health Check"])
 async def health_check(db: AsyncSession = Depends(get_db)):
     # Execute a simple query to verify the connection
     start = time.time()

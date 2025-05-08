@@ -7,7 +7,8 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     # External URLs
-    CONTACT_MESSAGE_URL: str = "http://localhost:8000"
+    CONTACT_MESSAGE_SOURCE_URL: str = "http://localhost:8000"
+    CONTACT_MESSAGE_DESTINATION_URL: str
 
     # Database settings
     DB_HOST: str = "localhost"

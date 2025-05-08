@@ -5,7 +5,9 @@ from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 import httpx
 import pandas as pd
+from jsonschema import ValidationError, validate
 
+from app.crud import DataRepository
 from app.errors import AuthenticationError
 from app.log import logger
 from app.schemas import ResponseData, RetryConfig
@@ -13,6 +15,202 @@ from app.schemas import ResponseData, RetryConfig
 # Type for the authentication callable
 T = TypeVar("T")
 AuthCallable = Callable[[str, Dict[str, Any]], Dict[str, Any]]
+
+
+async def fetch_data_from_api(
+    source_url: str,
+    params: Optional[Dict] = None,
+    auth_handler: Optional[AuthCallable] = None,
+    retry_config: Optional[RetryConfig] = None,
+    timeout: Optional[float] = 30.0,
+) -> List[Dict]:
+    """
+    Asynchronously fetch data from a REST API with support for retries, authentication, and error handling.
+
+    This function attempts to retrieve data from the specified API endpoint using HTTP GET requests.
+    It implements an exponential backoff retry mechanism for handling transient failures and
+    automatically normalizes common API response formats.
+
+    Args:
+        source_url (str): The URL of the API endpoint to fetch data from.
+        params (Optional[Dict], optional): Query parameters to include in the request. Defaults to None.
+        auth_handler (Optional[AuthCallable], optional): Callback function that handles authentication.
+            Should accept and modify a request. Defaults to None (authentication not implemented yet).
+        retry_config (Optional[RetryConfig], optional): Configuration object for retry behavior.
+            If not provided, default RetryConfig settings will be used.
+        timeout (Optional[float], optional): Request timeout in seconds. Defaults to 30.0.
+
+    Returns:
+        List[Dict]: A list of dictionaries containing the API response data. The function attempts to
+        extract data from common response structures (list, dict with 'data', 'results', or 'items' keys).
+        If the structure doesn't match any expected format, it returns the response wrapped in a list.
+
+    Raises:
+        No exceptions are raised directly by this function. All exceptions are caught and
+        returned as ResponseData objects with appropriate error information.
+
+    Note:
+        - The function automatically handles different API response formats:
+          * Lists are returned directly
+          * Dictionaries with 'data', 'results', or 'items' keys have their values extracted
+          * Other formats are wrapped in a list
+        - Authentication logic is not yet implemented (marked as TO DO in the code)
+        - Uses exponential backoff for retries with configurable parameters via RetryConfig
+        - Retries are only attempted for status codes specified in retry_config.retry_status_codes
+        - Network errors (connection, timeout) are always considered retryable
+
+    Examples:
+        ```python
+        # Basic usage
+        data = await fetch_data_from_api("https://api.example.com/v1/resources")
+
+        # With query parameters
+        params = {"limit": 100, "offset": 0}
+        data = await fetch_data_from_api("https://api.example.com/v1/search", params=params)
+
+        # With custom retry configuration
+        retry_config = RetryConfig(max_attempts=5, base_delay=1.0)
+        data = await fetch_data_from_api(
+            "https://api.example.com/v1/data",
+            retry_config=retry_config,
+            timeout=60.0
+        )
+        ```
+    """
+    if retry_config is None:
+        retry_config = RetryConfig()
+
+    # TO DO: add authentication logic
+
+    attempt = 0
+    last_exception = None
+
+    while attempt < retry_config.max_attempts:
+        attempt += 1
+        delay = min(
+            retry_config.base_delay * (retry_config.backoff_factor ** (attempt - 1)),
+            retry_config.max_delay,
+        )
+
+        try:
+            logger.debug(
+                f"Attempt {attempt}/{retry_config.max_attempts} to fetch data from {source_url}"
+            )
+
+            async with httpx.AsyncClient() as client:
+                response = await client.get(source_url, params=params)
+                response.raise_for_status()
+                data = response.json()
+
+                # Handle different API response formats if necessary
+                if isinstance(data, list):
+                    return data
+                elif isinstance(data, dict) and "data" in data:
+                    return data["data"]
+                elif isinstance(data, dict) and "results" in data:
+                    return data["results"]
+                elif isinstance(data, dict) and "items" in data:
+                    return data["items"]
+                else:
+                    # If the structure doesn't match any expected format, return as is
+                    # and let the caller handle it
+                    return [data]
+
+        except httpx.HTTPStatusError as e:
+            last_exception = e
+            status_code = e.response.status_code
+
+            # Log the error
+            logger.warning(
+                f"Request failed with status {status_code}, "
+                f"attempt {attempt}/{retry_config.max_attempts}"
+            )
+
+            # If not a retryable status code, raise immediately
+            if status_code not in retry_config.retry_status_codes:
+                return ResponseData(
+                    success=False,
+                    status_code=status_code,
+                    content=e.response.content
+                    if hasattr(e.response, "content")
+                    else None,
+                    error_message=f"HTTP error {status_code}: {str(e)}",
+                )
+
+        except (httpx.RequestError, httpx.TimeoutException) as e:
+            # Network-related errors
+            last_exception = e
+            logger.warning(
+                f"Request failed due to connection error: {str(e)}, "
+                f"attempt {attempt}/{retry_config.max_attempts}"
+            )
+
+        except Exception as e:
+            # Unexpected errors
+            last_exception = e
+            logger.error(f"Unexpected error during request: {str(e)}")
+            return ResponseData(
+                success=False,
+                status_code=500,
+                content=None,
+                error_message=f"Unexpected error: {str(e)}",
+            )
+
+            # If this wasn't the last attempt, wait before retrying
+        if attempt < retry_config.max_attempts:
+            logger.info(f"Retrying in {delay:.2f} seconds...")
+            await asyncio.sleep(delay)
+
+            # If we've exhausted all retries
+        error_message = f"Maximum retry attempts ({retry_config.max_attempts}) exceeded"
+        logger.error(error_message)
+
+        return ResponseData(
+            success=False,
+            status_code=last_exception.response.status_code
+            if hasattr(last_exception, "response")
+            else 0,
+            content=None,
+            error_message=error_message,
+        )
+
+
+async def process_records(
+    records: List[Dict], schema: Dict, schema_config: Dict, repo: DataRepository
+) -> Dict:
+    """Process records through validation, transformation, storage and forwarding."""
+    results = []
+    validation_errors = []
+    errors = []
+
+    for record in records:
+        logger.info(f"Working with the record {record} of the type {type(record)}")
+        try:
+            validate(instance=record, schema=schema)
+            transformed_data = schema_config["transform"](record)
+            db_item = await repo.create(
+                {
+                    "schema_name": schema_config["schema_name"],
+                    "raw_data": record,
+                    "transformed_data": transformed_data,
+                    "forwarded_to": schema_config["destination_url"],
+                },
+                refresh_fields=["id"],
+            )
+            await forward_data(transformed_data, schema_config["destination_url"])
+            results.append({"id": db_item.id, "status": "success"})
+        except ValidationError as ve:
+            validation_errors.append(
+                {"record": record, "status": "validation error", "detail": ve.message}
+            )
+        except Exception as e:
+            errors.append({"record": record, "status": "error", "detail": str(e)})
+
+    return {
+        "results": results,
+        "validation_errors": validation_errors,
+        "errors": errors,
+    }
 
 
 async def forward_data(

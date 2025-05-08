@@ -1,11 +1,11 @@
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field, validator
 
 
 class SchemaRequest(BaseModel):
     name: str
-    schema: dict
+    schema: Dict[str, Any]
     schema_type: str = "JSON"
 
 
